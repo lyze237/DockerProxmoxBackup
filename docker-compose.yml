@@ -2,11 +2,12 @@ version: '3.8'
 
 services:
     DockerProxmoxBackup:
-        hostname: devtools
         # hostname: "{{.Node.Hostname}}"
+        hostname: devtools
+        # image: ghcr.io/lyze237/dockerproxmoxbackup:main
+        image: dockerproxmoxbackup
         build:
             context: .
-        image: DockerProxmoxBackup
         secrets:
             - proxmox_password_secret
         volumes:
@@ -15,6 +16,18 @@ services:
             Proxmox__PasswordFile: "/run/secrets/proxmox_password_secret"
             Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
             ProxmoX__Namespace: "files"
+
+    PostgresExample:
+        image: postgres
+        environment:
+            POSTGRES_PASSWORD: password
+
+    OtherPostgresExample:
+        image: postgres
+        labels:
+            backup.name: other
+        environment:
+            POSTGRES_PASSWORD: password
 
 secrets:
     proxmox_password_secret:
