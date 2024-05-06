@@ -46,9 +46,14 @@ public class BackupJob(
         allDirectories.AddRange(mountsDirectories);
 
         logger.LogInformation("Uploading {Amount} Folders", allDirectories.Count);
-        var uploadExitCode = await UploadToProxmox(allDirectories.ToArray());
 
-        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state={(errorCounts == 0 && uploadExitCode == 0 ? "complete" : "fail")}&host={Dns.GetHostName()}&metric=error_count:{errorCounts}&status_code={uploadExitCode}", stoppingToken);
+        var uploadExitCode = 0L;
+        if (allDirectories.Count > 0)
+        {
+            uploadExitCode = await UploadToProxmox(allDirectories.ToArray());
+        }
+
+        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state={(errorCounts == 0 && uploadExitCode == 0 ? "complete" : "fail")}&host={Dns.GetHostName()}&metric=error_count:{errorCounts}&status_code={uploadExitCode}&metric=count:{allDirectories.Count}{(allDirectories.Count == 0 ? "&message=NoUploads" : "")}", stoppingToken);
     }
 
     private async Task<List<(string, string)>> DoContainerBackups(IList<ContainerListResponse> containers,
