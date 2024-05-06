@@ -5,6 +5,7 @@ using DockerProxmoxBackup.Options;
 using Microsoft.Extensions.Options;
 using Quartz;
 using DockerProxmoxBackup.Extensions;
+using System.Net;
 
 namespace DockerProxmoxBackup.Jobs;
 
@@ -14,7 +15,9 @@ public class BackupJob(
 {
     private readonly ProxmoxOptions proxmoxOptions = proxmoxOptions.Value;
 
-    private readonly DockerClient client = new DockerClientConfiguration().CreateClient();
+    private readonly DockerClient dockerClient = new DockerClientConfiguration().CreateClient();
+
+    private readonly HttpClient httpClient = new();
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) =>
         await Run(stoppingToken);
@@ -25,20 +28,27 @@ public class BackupJob(
     private async Task Run(CancellationToken stoppingToken)
     {
         logger.LogInformation("Running worker");
+        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state=run&host={Dns.GetHostName()}", stoppingToken);
 
-        var containers = await client.Containers.ListContainersAsync(new ContainersListParameters(), stoppingToken);
+        var containers = await dockerClient.Containers.ListContainersAsync(new ContainersListParameters(), stoppingToken);
+
+        var errorCounts = 0;
 
         var postgresDirectory = await DoPostgresBackups(containers, stoppingToken);
+        errorCounts += postgresDirectory.errorCount;
+
         var mountsDirectories = await DoContainerBackups(containers, stoppingToken);
 
         var allDirectories = new List<(string, string)>();
         if (Directory.GetFiles(postgresDirectory.directory).Length > 0)
-            allDirectories.Add(postgresDirectory);
+            allDirectories.Add((postgresDirectory.name, postgresDirectory.directory));
         
         allDirectories.AddRange(mountsDirectories);
 
         logger.LogInformation("Uploading {Amount} Folders", allDirectories.Count);
-        await UploadToProxmox(allDirectories.ToArray());
+        var uploadExitCode = await UploadToProxmox(allDirectories.ToArray());
+
+        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state={(errorCounts > 0 ? "fail" : "complete")}&host={Dns.GetHostName()}&metric=error_count:{errorCounts}&status_code={uploadExitCode}", stoppingToken);
     }
 
     private async Task<List<(string, string)>> DoContainerBackups(IList<ContainerListResponse> containers,
@@ -62,7 +72,7 @@ public class BackupJob(
         logger.LogInformation("Backing up mount {Container} {Hostnames}", container.ID,
             string.Join(", ", container.Names));
 
-        var inspect = await client.Containers.InspectContainerAsync(container.ID, stoppingToken);
+        var inspect = await dockerClient.Containers.InspectContainerAsync(container.ID, stoppingToken);
 
         var mounts = new List<(string, string)>();
 
@@ -86,24 +96,27 @@ public class BackupJob(
     }
 
 
-    private async Task<(string name, string directory)> DoPostgresBackups(IList<ContainerListResponse> containers,
+    private async Task<(string name, string directory, int errorCount)> DoPostgresBackups(IList<ContainerListResponse> containers,
         CancellationToken stoppingToken)
     {
         var directory = new DirectoryInfo($"/tmp/{Guid.NewGuid().ToString()}");
         logger.LogInformation($"Putting db stuff into {directory.FullName}");
         directory.Create();
 
+        var errorCount = 0;
+
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
             if (container.Image.Contains("postgres") || container.Image.Contains("pgvecto-rs"))
-                await BackupPostgresDb(directory, container, stoppingToken);
+                if (!await BackupPostgresDb(directory, container, stoppingToken))
+                    errorCount++;
         }
 
-        return ("dockerProxmoxBackup", directory.FullName);
+        return ("dockerProxmoxBackup", directory.FullName, errorCount);
     }
 
-    private async Task BackupPostgresDb(DirectoryInfo directory, ContainerListResponse container,
+    private async Task<bool> BackupPostgresDb(DirectoryInfo directory, ContainerListResponse container,
         CancellationToken stoppingToken)
     {
         logger.LogInformation("Backing up postgres {Container} {Hostnames}", container.ID,
@@ -120,7 +133,7 @@ public class BackupJob(
             logger.LogError("Failed to backup {Container} due to exit code {ExitCode} != 0, terminating", container.ID,
                 createDumpResult.exitCode);
 
-            return;
+            return false;
         }
 
         logger.LogInformation("Extracting dump from container");
@@ -130,9 +143,11 @@ public class BackupJob(
 
         logger.LogInformation("Added dump {file} to proxmox backup with {Size} <size units>", backupFile.FullName,
             getDumpFileResult.Stat.Size);
+
+        return true;
     }
 
-    private async Task UploadToProxmox(params (string name, string directory)[] directory)
+    private async Task<long> UploadToProxmox(params (string name, string directory)[] directory)
     {
         var processStartInfo = new ProcessStartInfo("proxmox-backup-client")
         {
@@ -171,6 +186,8 @@ public class BackupJob(
 
         if (process.ExitCode != 0)
             logger.LogError("Proxmox exited in a bad state.");
+
+        return process.ExitCode;
     }
 
     private async Task<FileInfo> WriteDumpToFile(DirectoryInfo directory, ContainerListResponse container,
@@ -194,7 +211,7 @@ public class BackupJob(
             Path = fileName
         };
 
-        var getDumpCommand = await client.Containers.GetArchiveFromContainerAsync(container.ID,
+        var getDumpCommand = await dockerClient.Containers.GetArchiveFromContainerAsync(container.ID,
             getArchiveFromContainerParameters, false, stoppingToken);
         return getDumpCommand;
     }
@@ -204,19 +221,19 @@ public class BackupJob(
     {
         var fileName = "/postgres.dump";
 
-        var cmd = new[] { "pg_dumpall", "--clean", "-U", await container.GetPostgresUsername(client), "-f", fileName };
+        var cmd = new[] { "pg_dumpall", "--clean", "-U", await container.GetPostgresUsername(dockerClient), "-f", fileName };
         logger.LogInformation("Dumping with command {Command}", string.Join(" ", cmd));
 
-        var result = await client.Exec.ExecCreateContainerAsync(container.ID, new ContainerExecCreateParameters
+        var result = await dockerClient.Exec.ExecCreateContainerAsync(container.ID, new ContainerExecCreateParameters
         {
             AttachStderr = true,
             AttachStdout = true,
             Cmd = cmd
         }, stoppingToken);
 
-        using var stream = await client.Exec.StartAndAttachContainerExecAsync(result.ID, true, stoppingToken);
+        using var stream = await dockerClient.Exec.StartAndAttachContainerExecAsync(result.ID, true, stoppingToken);
         var (stdout, stderr) = await stream.ReadOutputToEndAsync(stoppingToken);
-        var execInspectResponse = await client.Exec.InspectContainerExecAsync(result.ID, stoppingToken);
+        var execInspectResponse = await dockerClient.Exec.InspectContainerExecAsync(result.ID, stoppingToken);
 
         return (stdout, stderr, execInspectResponse.ExitCode, fileName);
     }

@@ -6,4 +6,6 @@ public class ProxmoxOptions
     public string Repository { get; set; }
     public string Namespace { get; set; }
     public string Cronjob { get; set; }
+
+    public string? CronitorUrl { get; set; }
 }

@@ -22,6 +22,7 @@ services:
             Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
             Proxmox__Namespace: "files"
             Proxmox__Cronjob: "0 0 3 * * ?" # https://www.quartz-scheduler.net/documentation/quartz-3.x/tutorial/crontrigger.html
+            Proxmox__CronitorUrl: https://cronitor.link/p/...
 ```
 
 The tool uses the following order for the backup file name:
