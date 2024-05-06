@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+    DockerProxmoxBackup:
+        hostname: devtools
+        # hostname: "{{.Node.Hostname}}"
+        build:
+            context: .
+        image: DockerProxmoxBackup
+        secrets:
+            - proxmox_password_secret
+        volumes:
+            - /var/run/docker.sock:/var/run/docker.sock:ro
+        environment:
+            Proxmox__PasswordFile: "/run/secrets/proxmox_password_secret"
+            Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
+            ProxmoX__Namespace: "files"
+
+secrets:
+    proxmox_password_secret:
+        file: proxmox_password.secret
