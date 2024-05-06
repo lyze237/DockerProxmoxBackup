@@ -28,7 +28,7 @@ public class BackupJob(
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
-            if (!container.Image.Contains("postgres"))
+            if (!container.Image.Contains("postgres") || !container.Image.Contains("pgvecto-rs"))
                 continue;
 
             logger.LogInformation("Backing up {Container} {Hostnames}", container.ID,
