@@ -157,7 +157,12 @@ public class BackupJob(
 
         process.OutputDataReceived += (_, args) => logger.LogInformation($"[Exec] {args.Data}");
         process.ErrorDataReceived += (_, args) => logger.LogInformation($"[Exec] {args.Data}");
+        process.EnableRaisingEvents = true;
+        
         process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        
         await process.WaitForExitAsync();
 
         logger.LogInformation("Proxmox backup exited with {ExitCode}", process.ExitCode);
