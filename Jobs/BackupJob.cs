@@ -31,7 +31,10 @@ public class BackupJob(
         var postgresDirectory = await DoPostgresBackups(containers, stoppingToken);
         var mountsDirectories = await DoContainerBackups(containers, stoppingToken);
 
-        var allDirectories = new List<(string, string)> { postgresDirectory };
+        var allDirectories = new List<(string, string)>();
+        if (Directory.GetFiles(postgresDirectory.directory).Length > 0)
+            allDirectories.Add(postgresDirectory);
+        
         allDirectories.AddRange(mountsDirectories);
 
         logger.LogInformation("Uploading {Amount} Folders", allDirectories.Count);
@@ -86,7 +89,9 @@ public class BackupJob(
     private async Task<(string name, string directory)> DoPostgresBackups(IList<ContainerListResponse> containers,
         CancellationToken stoppingToken)
     {
-        var directory = new DirectoryInfo($"/tmp/{Guid.NewGuid}");
+        var directory = new DirectoryInfo($"/tmp/{Guid.NewGuid().ToString()}");
+        logger.LogInformation($"Putting db stuff into {directory.FullName}");
+        directory.Create();
 
         foreach (var container in containers)
         {
