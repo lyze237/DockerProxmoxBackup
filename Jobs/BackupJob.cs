@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Net;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using DockerProxmoxBackup.Options;
@@ -10,30 +9,35 @@ namespace DockerProxmoxBackup.Jobs;
 
 public class BackupJob(
     IOptions<ProxmoxOptions> proxmoxOptions,
-    ILogger<BackupJob> logger) : IJob
+    ILogger<BackupJob> logger) : BackgroundService, IJob
 {
     private readonly ProxmoxOptions proxmoxOptions = proxmoxOptions.Value;
 
     private readonly DockerClient client = new DockerClientConfiguration().CreateClient();
 
-    public async Task Execute(IJobExecutionContext context)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) =>
+        await Run(stoppingToken);
+
+    public async Task Execute(IJobExecutionContext context) =>
+        await Run(context.CancellationToken);
+
+    private async Task Run(CancellationToken stoppingToken)
     {
         logger.LogInformation("Running worker");
 
-        var containers =
-            await client.Containers.ListContainersAsync(new ContainersListParameters(), context.CancellationToken);
+        var containers = await client.Containers.ListContainersAsync(new ContainersListParameters(), stoppingToken);
 
         var directory = new DirectoryInfo($"/tmp/{DateTime.Now.ToString("O")}");
 
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
-            if (!container.Image.Contains("postgres") || !container.Image.Contains("pgvecto-rs"))
+            if (!container.Image.Contains("postgres") && !container.Image.Contains("pgvecto-rs"))
                 continue;
 
             logger.LogInformation("Backing up {Container} {Hostnames}", container.ID,
                 string.Join(", ", container.Names));
-            var createDumpResult = await DumpToFile(container, context.CancellationToken);
+            var createDumpResult = await DumpToFile(container, stoppingToken);
             logger.LogInformation("Backed up to {File} inside container with exit code {ExitCode}",
                 createDumpResult.fileName, createDumpResult.exitCode);
 
@@ -50,9 +54,9 @@ public class BackupJob(
 
             logger.LogInformation("Extracting dump from container");
             var getDumpFileResult =
-                await CpDumpFromContainer(container, createDumpResult.fileName, context.CancellationToken);
+                await CpDumpFromContainer(container, createDumpResult.fileName, stoppingToken);
 
-            var backupFile = await WriteDumpToFile(directory, container, getDumpFileResult, context.CancellationToken);
+            var backupFile = await WriteDumpToFile(directory, container, getDumpFileResult, stoppingToken);
 
             logger.LogInformation("Added dump {file} to proxmox backup with {Size} <size units>", backupFile.FullName,
                 getDumpFileResult.Stat.Size);

@@ -6,25 +6,39 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.Configure<ProxmoxOptions>(builder.Configuration.GetSection("Proxmox"));
 
-builder.Services.AddQuartz(q =>
+var cronjob = builder.Configuration.GetSection("Proxmox")["Cronjob"];
+
+if (cronjob != null)
 {
-    var job = new JobKey("backup");
-    q.AddJob<BackupJob>(opts => opts.WithIdentity(job));
-
-    q.AddTrigger(opts =>
+    builder.Services.AddQuartz(q =>
     {
-        var cronjob = builder.Configuration.GetSection("Proxmox")["Cronjob"] ??
-                      throw new ArgumentNullException("Proxmox__Cronjob environment variable not set");
-        Console.WriteLine($"Running backups with cronjob: {cronjob}");
+        var job = new JobKey("backup");
+        q.AddJob<BackupJob>(opts => opts.WithIdentity(job));
 
-        opts.ForJob(job)
-            .WithIdentity("backup-trigger")
-            .WithCronSchedule(cronjob)
-            .StartNow();
+        q.AddTrigger(opts =>
+        {
+            Console.WriteLine($"Running backups with cronjob: {cronjob}");
+
+            opts.ForJob(job)
+                .WithIdentity("backup-trigger-2")
+                .WithSimpleSchedule(schedule => schedule.WithIntervalInHours(1).Build())
+                .StartNow();
+
+            opts.ForJob(job)
+                .WithIdentity("backup-trigger")
+                .WithCronSchedule(cronjob)
+                .StartNow();
+        });
     });
-});
 
-builder.Services.AddQuartzHostedService(opts => { opts.WaitForJobsToComplete = true; });
+    builder.Services.AddQuartzHostedService(opts => { opts.WaitForJobsToComplete = true; });
+}
+
+if (cronjob == null)
+{
+    Console.WriteLine("Proxmox__Cronjob not set, running once right now");
+    builder.Services.AddHostedService<BackupJob>();
+}
 
 var host = builder.Build();
 host.Run();
