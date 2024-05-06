@@ -72,6 +72,11 @@ public class BackupJob(
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
+
+            if (container.Labels.TryGetValue("backup.skip", out var skipBackup))
+                if (skipBackup == "true")
+                    continue;
+
             if (!container.Image.Contains("postgres") && !container.Image.Contains("pgvecto-rs"))
                 mounts.AddRange(await BackupContainer(container, stoppingToken));
         }
@@ -121,6 +126,11 @@ public class BackupJob(
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
+
+            if (container.Labels.TryGetValue("backup.skip", out var skipBackup))
+                if (skipBackup == "true")
+                    continue;
+
             if (container.Image.Contains("postgres") || container.Image.Contains("pgvecto-rs"))
                 if (!await BackupPostgresDb(directory, container, stoppingToken))
                     errorCount++;

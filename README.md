@@ -47,6 +47,8 @@ Additionally it picks up the postgres username the following way:
 * Environment variable `POSTGRES_USER` on the database container
 * `postgres` user
 
+To skip a container set the label `backup.skip=true`
+
 Try and keep the name to the same across backups, so that proxmox can deduplicate it.
 
 Here's a full swarm example which deploys the container across all nodes:
