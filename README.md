@@ -36,9 +36,16 @@ The tool uses the following order for the backup file name:
         image: postgres
         labels:
             backup.name: other
+            backup.postgres_user: test
         environment:
+            POSTGRES_USER: test
             POSTGRES_PASSWORD: password
 ```
+
+Additionally it picks up the postgres username the following way:
+* Label `backup.postgres_user`
+* Environment variable `POSTGRES_USER` on the database container
+* `postgres` user
 
 Try and keep the name to the same across backups, so that proxmox can deduplicate it.
 
