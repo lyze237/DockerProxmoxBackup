@@ -36,6 +36,9 @@ public class BackupJob(
 
         logger.LogInformation("Uploading {Amount} Folders", allDirectories.Count);
         await UploadToProxmox(allDirectories.ToArray());
+
+        if (Directory.Exists(postgresDirectory.directory))
+            Directory.Delete(postgresDirectory.directory, true);
     }
 
     private async Task<List<(string, string)>> DoContainerBackups(IList<ContainerListResponse> containers,
@@ -63,7 +66,7 @@ public class BackupJob(
 
         var mounts = new List<(string, string)>();
 
-        foreach (var hostMount in inspect.HostConfig.Mounts)
+        foreach (var hostMount in inspect.HostConfig.Mounts ?? Array.Empty<Mount>())
         {
             if (!hostMount.Type.Equals("volume"))
                 continue;
@@ -83,7 +86,7 @@ public class BackupJob(
     }
 
 
-    private async Task<(string, string)> DoPostgresBackups(IList<ContainerListResponse> containers,
+    private async Task<(string name, string directory)> DoPostgresBackups(IList<ContainerListResponse> containers,
         CancellationToken stoppingToken)
     {
         var directory = new DirectoryInfo($"/tmp/{DateTime.Now.ToString("O")}");
