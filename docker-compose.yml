@@ -15,7 +15,8 @@ services:
         environment:
             Proxmox__PasswordFile: "/run/secrets/proxmox_password_secret"
             Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
-            ProxmoX__Namespace: "files"
+            Proxmox__Namespace: "files"
+            Proxmox__Cronjob: "0 0 3 * * ?" # https://www.quartz-scheduler.net/documentation/quartz-3.x/tutorial/crontrigger.html
 
     PostgresExample:
         image: postgres
