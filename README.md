@@ -1,7 +1,5 @@
 # DockerProxmoxBackup
-A simple tool to backup docker containers[1] to a proxmox backup server
-
-[1] Right now only postgres backup
+A simple tool to backup docker containers and postgres containers to a proxmox backup server
 
 ---
 
@@ -18,6 +16,7 @@ services:
             - proxmox_password_secret
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:ro
+            - /var/lib/docker/volumes:/mnt/var/lib/docker/volumes:ro
         environment:
             Proxmox__PasswordFile: "/run/secrets/proxmox_password_secret"
             Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
@@ -60,6 +59,7 @@ services:
         hostname: "{{.Node.Hostname}}"
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:ro
+            - /var/lib/docker/volumes:/mnt/var/lib/docker/volumes:ro
         secrets:
             - proxmox_password_secret
         environment:

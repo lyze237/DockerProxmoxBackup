@@ -4,6 +4,7 @@ using Docker.DotNet.Models;
 using DockerProxmoxBackup.Options;
 using Microsoft.Extensions.Options;
 using Quartz;
+using DockerProxmoxBackup.Extensions;
 
 namespace DockerProxmoxBackup.Jobs;
 
@@ -27,76 +28,125 @@ public class BackupJob(
 
         var containers = await client.Containers.ListContainersAsync(new ContainersListParameters(), stoppingToken);
 
-        var directory = new DirectoryInfo($"/tmp/{DateTime.Now.ToString("O")}");
+        var postgresDirectory = await DoPostgresBackups(containers, stoppingToken);
+        var mountsDirectories = await DoContainerBackups(containers, stoppingToken);
+
+        var allDirectories = new List<(string, string)> { postgresDirectory };
+        allDirectories.AddRange(mountsDirectories);
+
+        logger.LogInformation("Uploading {Amount} Folders", allDirectories.Count);
+        await UploadToProxmox(allDirectories.ToArray());
+    }
+
+    private async Task<List<(string, string)>> DoContainerBackups(IList<ContainerListResponse> containers,
+        CancellationToken stoppingToken)
+    {
+        var mounts = new List<(string, string)>();
 
         foreach (var container in containers)
         {
             logger.LogDebug("Checking {Container}", container.ID);
             if (!container.Image.Contains("postgres") && !container.Image.Contains("pgvecto-rs"))
-                continue;
-
-            logger.LogInformation("Backing up {Container} {Hostnames}", container.ID,
-                string.Join(", ", container.Names));
-            var createDumpResult = await DumpToFile(container, stoppingToken);
-            logger.LogInformation("Backed up to {File} inside container with exit code {ExitCode}",
-                createDumpResult.fileName, createDumpResult.exitCode);
-
-            logger.LogDebug(createDumpResult.stdout.Trim());
-            logger.LogError(createDumpResult.stderr.Trim());
-
-            if (createDumpResult.exitCode != 0)
-            {
-                logger.LogError("Failed to backup {Container} due to exit code {ExitCode} != 0, terminating",
-                    container.ID, createDumpResult.exitCode);
-
-                continue;
-            }
-
-            logger.LogInformation("Extracting dump from container");
-            var getDumpFileResult =
-                await CpDumpFromContainer(container, createDumpResult.fileName, stoppingToken);
-
-            var backupFile = await WriteDumpToFile(directory, container, getDumpFileResult, stoppingToken);
-
-            logger.LogInformation("Added dump {file} to proxmox backup with {Size} <size units>", backupFile.FullName,
-                getDumpFileResult.Stat.Size);
+                mounts.AddRange(await BackupContainer(container, stoppingToken));
         }
 
-        await UploadToProxmox(directory);
-        directory.Delete(true);
+        return mounts;
     }
 
-
-    private async Task<FileInfo> WriteDumpToFile(DirectoryInfo directory, ContainerListResponse container,
-        GetArchiveFromContainerResponse dumpFile, CancellationToken stoppingToken)
+    private async Task<List<(string, string)>> BackupContainer(ContainerListResponse container,
+        CancellationToken stoppingToken)
     {
-        if (!directory.Exists)
-            directory.Create();
+        logger.LogInformation("Backing up mount {Container} {Hostnames}", container.ID,
+            string.Join(", ", container.Names));
 
-        var tmpFile = new FileInfo(Path.Combine(directory.FullName, $"{GetContainerName(container)}.dump"));
-        await using var tmpStream = File.Create(tmpFile.FullName);
-        await dumpFile.Stream.CopyToAsync(tmpStream, stoppingToken);
+        var inspect = await client.Containers.InspectContainerAsync(container.ID, stoppingToken);
 
-        return tmpFile;
-    }
+        var mounts = new List<(string, string)>();
 
-    private async Task UploadToProxmox(DirectoryInfo directory)
-    {
-        var process = new Process
+        foreach (var hostMount in inspect.HostConfig.Mounts)
         {
-            StartInfo = new ProcessStartInfo("proxmox-backup-client")
-            {
-                ArgumentList =
-                {
-                    "backup", $"dockerProxmoxBackup.pxar:{directory.FullName}", "--repository",
-                    proxmoxOptions.Repository,
-                    "--ns", proxmoxOptions.Namespace
-                },
-                Environment = { { "PBS_PASSWORD_FILE", proxmoxOptions.PasswordFile } },
-                RedirectStandardError = true,
-                RedirectStandardOutput = true
-            }
+            if (!hostMount.Type.Equals("volume"))
+                continue;
+
+            // exclude non local mounts
+            if (hostMount.VolumeOptions.DriverConfig.Options.ContainsKey("type"))
+                continue;
+
+            var mount = inspect.Mounts.First(m => m.Name == hostMount.Source);
+            var path = "/mnt" + mount.Source;
+
+            logger.LogInformation("Backing up volume {Path}", path);
+            mounts.Add(($"{container.GetContainerName()}_{mount.Name}", path));
+        }
+
+        return mounts;
+    }
+
+
+    private async Task<(string, string)> DoPostgresBackups(IList<ContainerListResponse> containers,
+        CancellationToken stoppingToken)
+    {
+        var directory = new DirectoryInfo($"/tmp/{DateTime.Now.ToString("O")}");
+
+        foreach (var container in containers)
+        {
+            logger.LogDebug("Checking {Container}", container.ID);
+            if (container.Image.Contains("postgres") || container.Image.Contains("pgvecto-rs"))
+                await BackupPostgresDb(directory, container, stoppingToken);
+        }
+
+        return ("dockerProxmoxBackup", directory.FullName);
+    }
+
+    private async Task BackupPostgresDb(DirectoryInfo directory, ContainerListResponse container,
+        CancellationToken stoppingToken)
+    {
+        logger.LogInformation("Backing up postgres {Container} {Hostnames}", container.ID,
+            string.Join(", ", container.Names));
+        var createDumpResult = await DumpToFile(container, stoppingToken);
+        logger.LogInformation("Backed up to {File} inside container with exit code {ExitCode}",
+            createDumpResult.fileName, createDumpResult.exitCode);
+
+        logger.LogDebug(createDumpResult.stdout.Trim());
+        logger.LogError(createDumpResult.stderr.Trim());
+
+        if (createDumpResult.exitCode != 0)
+        {
+            logger.LogError("Failed to backup {Container} due to exit code {ExitCode} != 0, terminating", container.ID,
+                createDumpResult.exitCode);
+
+            return;
+        }
+
+        logger.LogInformation("Extracting dump from container");
+        var getDumpFileResult = await CpDumpFromContainer(container, createDumpResult.fileName, stoppingToken);
+
+        var backupFile = await WriteDumpToFile(directory, container, getDumpFileResult, stoppingToken);
+
+        logger.LogInformation("Added dump {file} to proxmox backup with {Size} <size units>", backupFile.FullName,
+            getDumpFileResult.Stat.Size);
+    }
+
+    private async Task UploadToProxmox(params (string name, string directory)[] directory)
+    {
+        var processStartInfo = new ProcessStartInfo("proxmox-backup-client")
+        {
+            Environment = { { "PBS_PASSWORD_FILE", proxmoxOptions.PasswordFile } },
+            RedirectStandardError = true,
+            RedirectStandardOutput = true
         };
+
+        processStartInfo.ArgumentList.Add("backup");
+
+        directory.Select(d => $"{d.name}.pxar:{d.directory}").ToList()
+            .ForEach(d => processStartInfo.ArgumentList.Add(d));
+
+        processStartInfo.ArgumentList.Add("--repository");
+        processStartInfo.ArgumentList.Add(proxmoxOptions.Repository);
+        processStartInfo.ArgumentList.Add("--ns");
+        processStartInfo.ArgumentList.Add(proxmoxOptions.Namespace);
+
+        var process = new Process { StartInfo = processStartInfo };
 
         logger.LogInformation("Running proxmox-backup-client {Args} with Env Args {Env}",
             string.Join(" ", process.StartInfo.ArgumentList),
@@ -111,6 +161,19 @@ public class BackupJob(
 
         if (process.ExitCode != 0)
             logger.LogError("Proxmox exited in a bad state.");
+    }
+
+    private async Task<FileInfo> WriteDumpToFile(DirectoryInfo directory, ContainerListResponse container,
+        GetArchiveFromContainerResponse dumpFile, CancellationToken stoppingToken)
+    {
+        if (!directory.Exists)
+            directory.Create();
+
+        var tmpFile = new FileInfo(Path.Combine(directory.FullName, $"{container.GetContainerName()}.dump"));
+        await using var tmpStream = File.Create(tmpFile.FullName);
+        await dumpFile.Stream.CopyToAsync(tmpStream, stoppingToken);
+
+        return tmpFile;
     }
 
     private async Task<GetArchiveFromContainerResponse> CpDumpFromContainer(ContainerListResponse container,
@@ -131,9 +194,9 @@ public class BackupJob(
     {
         var fileName = "/postgres.dump";
 
-        var cmd = new[] { "pg_dumpall", "--clean", "-U", await GetPostgresUsername(container), "-f", fileName };
+        var cmd = new[] { "pg_dumpall", "--clean", "-U", await container.GetPostgresUsername(client), "-f", fileName };
         logger.LogInformation("Dumping with command {Command}", string.Join(" ", cmd));
-        
+
         var result = await client.Exec.ExecCreateContainerAsync(container.ID, new ContainerExecCreateParameters
         {
             AttachStderr = true,
@@ -146,27 +209,5 @@ public class BackupJob(
         var execInspectResponse = await client.Exec.InspectContainerExecAsync(result.ID, stoppingToken);
 
         return (stdout, stderr, execInspectResponse.ExitCode, fileName);
-    }
-
-    private string GetContainerName(ContainerListResponse container)
-    {
-        if (container.Labels.TryGetValue("backup.name", out var labelName))
-            return labelName;
-
-        if (container.Labels.TryGetValue("com.docker.swarm.service.name", out var sarmName))
-            return sarmName;
-
-        return container.Names.FirstOrDefault()?.Replace("/", "") ?? container.ID;
-    }
-
-    private async Task<string> GetPostgresUsername(ContainerListResponse container)
-    {
-        if (container.Labels.TryGetValue("backup.postgres_user", out var postgresUser))
-            return postgresUser;
-
-        var inspect = await client.Containers.InspectContainerAsync(container.ID);
-        var user = inspect.Config.Env.FirstOrDefault(env => env.StartsWith("POSTGRES_USER"));
-
-        return user?.Split("=")[1] ?? "postgres";
     }
 }
