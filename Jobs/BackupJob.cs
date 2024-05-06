@@ -27,8 +27,13 @@ public class BackupJob(
 
     private async Task Run(CancellationToken stoppingToken)
     {
-        logger.LogInformation("Running worker");
-        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state=run&host={Dns.GetHostName()}", stoppingToken);
+        var delay = Random.Shared.Next(1000, 10000);
+        logger.LogInformation("Running worker in {Ms} ms", delay);
+        await Task.Delay(delay, stoppingToken);
+
+        var startUrl = $"{proxmoxOptions.CronitorUrl}?state=run&host={Dns.GetHostName()}";
+        logger.LogInformation("Calling url {Url}", startUrl);
+        await httpClient.GetAsync(startUrl, stoppingToken);
 
         var containers = await dockerClient.Containers.ListContainersAsync(new ContainersListParameters(), stoppingToken);
 
@@ -53,7 +58,10 @@ public class BackupJob(
             uploadExitCode = await UploadToProxmox(allDirectories.ToArray());
         }
 
-        await httpClient.GetAsync($"{proxmoxOptions.CronitorUrl}?state={(errorCounts == 0 && uploadExitCode == 0 ? "complete" : "fail")}&host={Dns.GetHostName()}&metric=error_count:{errorCounts}&status_code={uploadExitCode}&metric=count:{allDirectories.Count}{(allDirectories.Count == 0 ? "&message=NoUploads" : "")}", stoppingToken);
+        var finishUrl = $"{proxmoxOptions.CronitorUrl}?state={(errorCounts == 0 && uploadExitCode == 0 ? "complete" : "fail")}&host={Dns.GetHostName()}&metric=error_count:{errorCounts}&status_code={uploadExitCode}&metric=count:{allDirectories.Count}{(allDirectories.Count == 0 ? "&message=NoUploads" : "")}";
+        logger.LogInformation("Calling url {Url}", finishUrl);
+
+        await httpClient.GetAsync(finishUrl, stoppingToken);
     }
 
     private async Task<List<(string, string)>> DoContainerBackups(IList<ContainerListResponse> containers,

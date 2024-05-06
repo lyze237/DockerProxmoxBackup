@@ -13,13 +13,17 @@ services:
         volumes:
             - /var/run/docker.sock:/var/run/docker.sock:ro
             - /var/lib/docker/volumes:/mnt/var/lib/docker/volumes:ro
+            - type: tmpfs
+              target: /tmp
+              tmpfs:
+                  mode: 01777
         environment:
             Proxmox__PasswordFile: "/run/secrets/proxmox_password_secret"
             Proxmox__Repository: "bdd@pbs@backups.chirps.cafe:backups"
             Proxmox__Namespace: "files"
             Proxmox__Cronjob: "0 0 3 * * ?" # https://www.quartz-scheduler.net/documentation/quartz-3.x/tutorial/crontrigger.html
             Proxmox__CronitorUrl: https://cronitor.link/p/...
-    
+
     PostgresExample:
         image: postgres
         environment:
