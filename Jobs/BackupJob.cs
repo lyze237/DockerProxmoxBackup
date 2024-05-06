@@ -69,7 +69,7 @@ public class BackupJob(
                 continue;
 
             // exclude non local mounts
-            if (hostMount.VolumeOptions.DriverConfig.Options.ContainsKey("type"))
+            if (hostMount.VolumeOptions?.DriverConfig?.Options?.ContainsKey("type") ?? false)
                 continue;
 
             var mount = inspect.Mounts.First(m => m.Name == hostMount.Source);
